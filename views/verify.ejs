@@ -20,6 +20,7 @@
   <section class="card">
     <h1>Evidence manifest</h1>
     <p class="muted small">SHA-256 hashes for integrity verification.</p>
+    <p class="small muted">Build: <span class="mono"><%= (manifest && manifest.build_id) || build_id || '—' %></span></p>
     <div class="grid two">
       <article class="panel">
         <h3>Files</h3>
@@ -46,6 +47,9 @@
           <div><span class="k">Created (UTC)</span><span class="v mono"><%= manifest.created_utc %></span></div>
           <div><span class="k">Ruleset</span><span class="v mono"><%= manifest.ruleset_id %></span></div>
           <div><span class="k">Hash algo</span><span class="v mono"><%= manifest.hash_algo %></span></div>
+          <% if (manifest.watermark) { %>
+            <div><span class="k">Watermark</span><span class="v mono"><%= manifest.watermark %></span></div>
+          <% } %>
         </div>
       </article>
     </div>
