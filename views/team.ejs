@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Team — TrancheReady</title>
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+<header class="glass-nav">
+  <div class="container nav-grid">
+    <a class="brand" href="/" aria-label="TrancheReady">
+      <img src="/public/logo.svg" class="brand-mark" alt="" width="28" height="32">
+      <span class="brand-name">TrancheReady</span>
+    </a>
+  </div>
+</header>
+
+<main class="container page">
+  <section class="card">
+    <h1>Team</h1>
+    <p class="muted small">Team ID: <span class="mono"><%= team_id %></span> · Build: <span class="mono"><%= build_id %></span></p>
+    <div style="display:flex; gap:10px; margin-top:8px">
+      <button id="createInvite" class="btn primary">Create invite link</button>
+      <a class="btn ghost" href="/app">Back to app</a>
+    </div>
+    <div id="msg" class="muted small" style="margin-top:10px"></div>
+    <ul id="invList" class="file-list" style="margin-top:12px"></ul>
+  </section>
+</main>
+
+<script>
+(function(){
+  const btn = document.getElementById('createInvite');
+  const msg = document.getElementById('msg');
+  const list = document.getElementById('invList');
+
+  function addInvite(url){
+    const li = document.createElement('li');
+    li.innerHTML = '<div style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">'+
+      '<code class="mono">'+url+'</code>'+
+      '<div style="display:flex;gap:8px">'+
+        '<a class="btn small secondary" target="_blank" rel="noopener" href="'+url+'">Open</a>'+
+        '<button class="btn small ghost">Copy</button>'+
+      '</div></div>';
+    const copyBtn = li.querySelector('button');
+    copyBtn.addEventListener('click', async ()=> {
+      try{ await navigator.clipboard.writeText(url); copyBtn.textContent='Copied'; setTimeout(()=>copyBtn.textContent='Copy',1200); }catch{}
+    });
+    list.prepend(li);
+  }
+
+  btn?.addEventListener('click', async ()=>{
+    msg.textContent = 'Creating invite…';
+    try{
+      const r = await fetch('/team/invite', { method:'POST' });
+      const data = await r.json();
+      if(!r.ok) throw new Error(data.error || 'failed');
+      addInvite(data.invite_url);
+      msg.textContent = 'Invite created.';
+    }catch(e){
+      msg.textContent = 'Error: ' + (e.message || 'failed');
+    }
+  });
+})();
+</script>
+</body>
+</html>
