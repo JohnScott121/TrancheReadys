@@ -31,7 +31,10 @@ const STRIPE_PRICE_ID_STARTER = process.env.STRIPE_PRICE_ID_STARTER || '';
 const STRIPE_PRICE_ID_TEAM = process.env.STRIPE_PRICE_ID_TEAM || '';
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
-// Build absolute origin from request
+// Build ID used for watermark/provenance (stable across process lifetime)
+const BUILD_ID = process.env.BUILD_ID || crypto.randomBytes(6).toString('hex');
+
+// ---------- Helpers ----------
 function originOf(req) {
   const proto =
     (req.headers['x-forwarded-proto'] && String(req.headers['x-forwarded-proto']).split(',')[0]) ||
@@ -41,7 +44,7 @@ function originOf(req) {
   return `${proto}://${host}`;
 }
 
-// ---------- Signed cookie helpers ----------
+// Signed cookie
 function sign(value) {
   const h = crypto.createHmac('sha256', COOKIE_SECRET).update(value).digest('hex');
   return `${value}.${h}`;
@@ -52,22 +55,63 @@ function verifySigned(signed) {
   const value = signed.slice(0, idx);
   const sig = signed.slice(idx + 1);
   const good = crypto.createHmac('sha256', COOKIE_SECRET).update(value).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good)) ? value : null;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good)) ? value : null;
+  } catch { return null; }
+}
+function parseClaim(raw) {
+  const val = raw && verifySigned(raw);
+  if (!val) return null;
+  try { return JSON.parse(val); } catch { return null; }
 }
 
-// ---------- In-memory verify store ----------
+// Owner paid cookie (from Stripe return)
+function getOwnerClaim(req) {
+  const claim = parseClaim(req.cookies?.tr_paid);
+  if (!claim || claim.sub !== 'paid' || Date.now() > (claim.exp || 0)) return null;
+  return claim; // { sub:'paid', sid, exp }
+}
+
+// Seat cookie (from invite)
+function getSeatClaim(req) {
+  const claim = parseClaim(req.cookies?.tr_seat);
+  if (!claim || claim.sub !== 'seat' || Date.now() > (claim.exp || 0)) return null;
+  return claim; // { sub:'seat', team_id, role:'member', exp }
+}
+
+// Accept either owner (paid) or seat (member)
+function getAccess(req) {
+  const owner = getOwnerClaim(req);
+  const seat = getSeatClaim(req);
+  if (owner) return { role: 'owner', owner, seat: null };
+  if (seat)  return { role: 'member', owner: null, seat };
+  return null;
+}
+function requirePaid(req, res, next) {
+  const acc = getAccess(req);
+  if (acc) { req.access = acc; return next(); }
+  return res.redirect(302, '/pricing');
+}
+
+// Team id (stable per owner). We derive a deterministic id from session id (sid) when available.
+function teamIdForOwner(ownerClaim) {
+  const sid = ownerClaim?.sid || 'local';
+  return crypto.createHash('sha256').update(String(sid)).digest('hex').slice(0, 24);
+}
+
+// In-memory verify store
 const verifyStore = new Map(); // token -> { zipBuffer, manifest, exp }
 function newToken() {
   return crypto.randomBytes(16).toString('hex') + crypto.randomBytes(16).toString('hex');
 }
 
-// ---------- App ----------
+// ---------- Express ----------
 const app = express();
 app.set('trust proxy', true);
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
-// ---------- Middleware (order matters) ----------
+// Middleware (order matters)
 app.use(compression());
 app.use(
   helmet({
@@ -85,8 +129,6 @@ app.use(
     }
   })
 );
-
-// Static assets
 app.use('/public', express.static(path.join(__dirname, 'public'), { maxAge: '1h', etag: true }));
 app.use('/site', express.static(path.join(__dirname, 'public', 'site'), { maxAge: '30m', etag: true }));
 
@@ -117,41 +159,17 @@ const upload = multer({
 // ---------- Health ----------
 app.get('/healthz', (_req, res) => res.send('ok'));
 
-// ---------- Marketing nice URLs ----------
+// ---------- Marketing ----------
 app.get('/', (req, res) => {
-  const paid = getPaidClaim(req);
-  if (paid) return res.redirect(302, '/app');
+  const acc = getAccess(req);
+  if (acc) return res.redirect(302, '/app');
   return res.redirect(302, '/site/index.html');
 });
 app.get('/features', (_req, res) => res.redirect(302, '/site/features.html'));
 app.get('/faq', (_req, res) => res.redirect(302, '/site/faq.html'));
 app.get('/pricing', (_req, res) => res.redirect(302, '/site/pricing.html'));
 
-// ---------- Paywall ----------
-function getPaidClaim(req) {
-  const raw = req.cookies?.tr_paid;
-  if (!raw) return null;
-  const val = verifySigned(raw);
-  if (!val) return null;
-  try {
-    const obj = JSON.parse(val);
-    if (obj.sub !== 'paid' || typeof obj.exp !== 'number') return null;
-    if (Date.now() > obj.exp) return null;
-    return obj;
-  } catch {
-    return null;
-  }
-}
-function requirePaid(req, res, next) {
-  const claim = getPaidClaim(req);
-  if (claim) return next();
-  return res.redirect(302, '/pricing');
-}
-
-// App UI (protected)
-app.get('/app', requirePaid, (_req, res) => res.render('app'));
-
-// ---------- Stripe: create checkout & return ----------
+// ---------- Stripe checkout ----------
 app.post('/api/create-checkout-session', async (req, res) => {
   try {
     if (!stripe) return res.status(400).json({ error: 'Payments not configured.' });
@@ -185,6 +203,7 @@ app.get('/billing/return', async (req, res) => {
 
     if (!paidOk) return res.redirect(302, '/pricing?error=unpaid');
 
+    // Issue owner cookie
     const claim = JSON.stringify({ sub: 'paid', sid: session_id, exp: Date.now() + 30 * 24 * 3600 * 1000 });
     const signed = sign(claim);
     res.cookie('tr_paid', signed, {
@@ -199,6 +218,44 @@ app.get('/billing/return', async (req, res) => {
   }
 });
 
+// ---------- Team seats (magic links, no DB) ----------
+app.get('/team', requirePaid, (req, res) => {
+  const owner = req.access.role === 'owner' ? req.access.owner : null;
+  const team_id = teamIdForOwner(owner);
+  res.render('team', { team_id, build_id: BUILD_ID });
+});
+
+// Create invite token (owner only)
+app.post('/team/invite', requirePaid, (req, res) => {
+  if (req.access.role !== 'owner') return res.status(403).json({ error: 'Only owner can invite.' });
+  const owner = req.access.owner;
+  const team_id = teamIdForOwner(owner);
+  // Invite token expires in 7 days
+  const payload = JSON.stringify({ sub: 'invite', team_id, exp: Date.now() + 7 * 24 * 3600 * 1000 });
+  const token = sign(payload);
+  const base = originOf(req);
+  res.json({ invite_url: `${base}/join/${encodeURIComponent(token)}`, team_id });
+});
+
+// Redeem invite (sets seat cookie)
+app.get('/join/:token', (req, res) => {
+  const token = req.params.token || '';
+  const val = verifySigned(token);
+  if (!val) return res.status(400).render('error', { title: 'Invalid invite', message: 'This invite link is invalid.' });
+  let obj;
+  try { obj = JSON.parse(val); } catch { obj = null; }
+  if (!obj || obj.sub !== 'invite' || Date.now() > (obj.exp || 0)) {
+    return res.status(400).render('error', { title: 'Expired invite', message: 'This invite link has expired.' });
+  }
+  const seatClaim = JSON.stringify({ sub: 'seat', team_id: obj.team_id, role: 'member', exp: Date.now() + 30 * 24 * 3600 * 1000 });
+  const seatSigned = sign(seatClaim);
+  res.cookie('tr_seat', seatSigned, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 30 * 24 * 3600 * 1000 });
+  return res.redirect(302, '/app');
+});
+
+// ---------- App UI (protected) ----------
+app.get('/app', requirePaid, (_req, res) => res.render('app'));
+
 // ---------- Templates ----------
 app.get('/api/templates', (req, res) => {
   const name = String(req.query.name || '').toLowerCase();
@@ -210,7 +267,7 @@ app.get('/api/templates', (req, res) => {
   fs.createReadStream(full).pipe(res);
 });
 
-// ---------- VALIDATE (friendlier JSON) ----------
+// ---------- Validate ----------
 app.post(
   '/api/validate',
   requirePaid,
@@ -289,10 +346,15 @@ app.post(
         'clients.json': Buffer.from(JSON.stringify(clients, null, 2)),
         'transactions.json': Buffer.from(JSON.stringify(txs, null, 2)),
         'cases.json': Buffer.from(JSON.stringify(cases, null, 2)),
-        'program.html': Buffer.from(renderProgramHTML(rulesMeta, clientHeaderMap, txHeaderMap, rejects))
+        'program.html': Buffer.from(renderProgramHTML(rulesMeta, clientHeaderMap, txHeaderMap, rejects, BUILD_ID))
       };
 
-      const manifest = buildManifest(files, rulesMeta);
+      // 🔐 Add watermark & build id in manifest
+      const manifest = buildManifest(files, rulesMeta, {
+        build_id: BUILD_ID,
+        watermark: `TrancheReady evidence • Build ${BUILD_ID}`
+      });
+
       const zipBuffer = await zipNamedBuffers({
         ...files,
         'manifest.json': Buffer.from(JSON.stringify(manifest, null, 2))
@@ -315,7 +377,7 @@ app.post(
   }
 );
 
-function renderProgramHTML(rulesMeta, clientHeaderMap, txHeaderMap, rejects) {
+function renderProgramHTML(rulesMeta, clientHeaderMap, txHeaderMap, rejects, buildId) {
   return `<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TrancheReady Evidence</title>
@@ -328,11 +390,13 @@ function renderProgramHTML(rulesMeta, clientHeaderMap, txHeaderMap, rejects) {
   h1,h2{margin:.2rem 0 .6rem}
   .muted{color:var(--muted)}
   pre{white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace;background:#0C1733;border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto}
+  .water{color:#9FB1D8;margin-top:6px;font-size:.92rem}
 </style>
 <div class="wrap">
   <div class="card">
     <h1>TrancheReady Evidence</h1>
     <p class="muted">Generated: ${new Date().toISOString()}</p>
+    <p class="water">Build: ${buildId}</p>
   </div>
   <div class="card">
     <h2>Ruleset</h2>
@@ -352,7 +416,7 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ---------- Verify & Download (public, rate limited) ----------
+// ---------- Verify & Download ----------
 app.get('/verify/:token', verifyLimiter, (req, res) => {
   const entry = verifyStore.get(req.params.token);
   if (!entry || Date.now() > entry.exp) {
@@ -360,7 +424,7 @@ app.get('/verify/:token', verifyLimiter, (req, res) => {
     try { return res.render('error', { title: 'Link expired', message: 'This verify link has expired or is invalid.' }); }
     catch { return res.send('Link expired or not found.'); }
   }
-  res.render('verify', { manifest: entry.manifest });
+  res.render('verify', { manifest: entry.manifest, build_id: BUILD_ID });
 });
 
 app.get('/download/:token', dlLimiter, (req, res) => {
@@ -375,7 +439,7 @@ app.get('/download/:token', dlLimiter, (req, res) => {
   res.send(entry.zipBuffer);
 });
 
-// ---------- 404 & error pages ----------
+// ---------- 404 & error ----------
 app.use((req, res) => {
   res.status(404);
   try { return res.render('error', { title: 'Not found', message: 'The page you requested was not found.' }); }
@@ -391,4 +455,4 @@ app.use((err, _req, res, _next) => {
 
 // ---------- Start ----------
 const PORT = parseInt(process.env.PORT || '10000', 10);
-app.listen(PORT, () => console.log('listening on', PORT));
+app.listen(PORT, () => console.log('listening on', PORT, 'build', BUILD_ID));
