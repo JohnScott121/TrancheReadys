@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pricing — TrancheReady</title>
+  <link rel="icon" href="/public/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/public/site/site.css">
+</head>
+<body>
+<header class="glass-nav">
+  <div class="container nav-grid">
+    <a class="brand" href="/"><img src="/public/logo.svg" class="brand-mark" alt="" width="28" height="32"><span class="brand-name">TrancheReady</span></a>
+    <nav class="nav-links">
+      <a class="link-muted" href="/features">Features</a>
+      <a class="link-muted" href="/faq">FAQ</a>
+      <a class="btn secondary" href="/pricing">Pricing</a>
+    </nav>
+  </div>
+</header>
+
+<main class="container page">
+  <section class="card">
+    <h1>Pricing</h1>
+    <p class="muted">Choose a plan to unlock the app.</p>
+    <div class="list">
+      <article class="panel">
+        <h3>Starter</h3>
+        <p>Single evidence run.</p>
+        <button class="btn primary" data-plan="starter">Buy Starter</button>
+      </article>
+      <article class="panel">
+        <h3>Team</h3>
+        <p>Unlimited runs (subscription).</p>
+        <button class="btn secondary" data-plan="team">Buy Team</button>
+      </article>
+    </div>
+    <p id="msg" class="muted small" style="margin-top:12px;"></p>
+  </section>
+</main>
+
+<script>
+(function(){
+  const msg = document.getElementById('msg');
+  function setMsg(t){ msg.textContent = t || ''; }
+  async function go(plan){
+    setMsg('Redirecting to checkout…');
+    try{
+      const res = await fetch('/api/create-checkout-session', {
+        method:'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ plan })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Checkout failed');
+      location.href = data.url;
+    }catch(e){
+      setMsg('Error: ' + (e.message || 'failed'));
+    }
+  }
+  document.querySelectorAll('button[data-plan]').forEach(btn => {
+    btn.addEventListener('click', ()=> go(btn.getAttribute('data-plan')));
+  });
+})();
+</script>
+</body>
+</html>
