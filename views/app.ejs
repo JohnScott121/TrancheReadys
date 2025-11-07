@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TrancheReady — CSV in → Signed ZIP out</title>
+  <link rel="icon" href="/public/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+<header class="glass-nav">
+  <div class="container nav-grid">
+    <a class="brand" href="/" aria-label="TrancheReady">
+      <img src="/public/logo.svg" class="brand-mark" alt="" width="28" height="32"><span class="brand-name">TrancheReady</span>
+    </a>
+  </div>
+</header>
+
+<main class="container page">
+  <section class="card hero-app">
+    <div class="hero-copy">
+      <h1>CSV in → Signed ZIP out</h1>
+      <p class="lead">Explainable risk scores, monitoring cases, and a signed evidence pack. No credentials.</p>
+      <div class="actions">
+        <a class="btn primary" href="#uploader">Start</a>
+        <a class="btn ghost" href="/api/templates?name=clients">Clients template</a>
+        <a class="btn ghost" href="/api/templates?name=transactions">Transactions template</a>
+      </div>
+    </div>
+    <div class="hero-ill"><div class="shield"></div></div>
+  </section>
+
+  <section id="uploader" class="card">
+    <h2>Upload</h2>
+    <p class="muted">Select <strong>Clients.csv</strong> and <strong>Transactions.csv</strong>. Files are processed in memory only.</p>
+
+    <form id="uform" class="uform">
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="Drop CSV files here">
+        <div class="drop-inner">
+          <svg viewBox="0 0 24 24" class="i-xl"><path d="M12 16v-8m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <div>Drop <strong>Clients.csv</strong> & <strong>Transactions.csv</strong></div>
+          <small class="muted">…or select below</small>
+        </div>
+      </div>
+
+      <div class="inputs">
+        <label class="file-row"><span>Clients.csv</span><input id="clientsInput" required type="file" name="clients" accept=".csv" /></label>
+        <label class="file-row"><span>Transactions.csv</span><input id="txInput" required type="file" name="transactions" accept=".csv" /></label>
+      </div>
+
+      <div class="actions">
+        <button id="validateBtn" class="btn secondary" type="button">Validate only</button>
+        <button id="submitBtn" class="btn primary" type="submit"><span class="btn-spinner" aria-hidden="true"></span>Generate evidence</button>
+      </div>
+
+      <div id="progress" class="progress" hidden><div class="bar" style="width:0%"></div></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Results</h2>
+
+    <div id="summary" class="summary" hidden>
+      <div class="summary-row">
+        <div><div class="label">Verify link</div><div class="mono" id="verifyUrl">—</div></div>
+        <div class="summary-actions">
+          <button class="btn small" id="copyVerify">Copy</button>
+          <a class="btn secondary" id="openVerify" target="_blank" rel="noopener">Open</a>
+          <a class="btn primary" id="downloadZip">Download ZIP</a>
+        </div>
+      </div>
+    </div>
+
+    <div id="riskWrap" class="table-wrap" hidden>
+      <table class="table" aria-describedby="riskCaption">
+        <caption id="riskCaption" class="sr-only">Client risk scores</caption>
+        <thead><tr><th>Client</th><th>Band</th><th>Score</th><th>Reasons</th></tr></thead>
+        <tbody id="riskBody"></tbody>
+      </table>
+    </div>
+
+    <pre id="out" class="pre" aria-live="polite"></pre>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="/public/app.js" defer></script>
+</body>
+</html>
