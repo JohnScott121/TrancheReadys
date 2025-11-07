@@ -1,0 +1,7 @@
+tx_id,client_id,date,amount,currency,direction,method,counterparty_name,counterparty_country,matter_id
+T-1001,C-001,2025-09-14,9800,AUD,in,cash,Branch Cash,AU,FILE-22
+T-1002,C-001,2025-09-16,9750,AUD,in,cash,Branch Cash,AU,FILE-22
+T-1003,C-001,2025-09-18,9900,AUD,in,cash,Branch Cash,AU,FILE-22
+T-1004,C-001,2025-09-20,9800,AUD,in,cash,Branch Cash,AU,FILE-22
+T-2001,C-002,2025-07-03,12000,AUD,out,wire,Acme Import,HK,CASE-9
+T-2002,C-002,2025-08-11,21000,AUD,out,wire,Acme Import,HK,CASE-9
