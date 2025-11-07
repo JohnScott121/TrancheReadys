@@ -1,4 +1,3 @@
-import { validateClients, validateTransactions } from './lib/validate.js';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -18,12 +17,13 @@ import { scoreAll } from './lib/rules.js';
 import { buildCases } from './lib/cases.js';
 import { buildManifest } from './lib/manifest.js';
 import { zipNamedBuffers } from './lib/zip.js';
+import { validateClients, validateTransactions } from './lib/validate.js';
 
 // ---------- Paths ----------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---------- Config (minimal) ----------
+// ---------- Config ----------
 const VERIFY_TTL_MIN = parseInt(process.env.VERIFY_TTL_MIN || '60', 10);
 const COOKIE_SECRET = process.env.COOKIE_SECRET || 'dev_cookie_secret_change_me';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
@@ -104,6 +104,8 @@ app.use(
 
 const baseLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300 });
 const heavyLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 60 });
+const verifyLimiter = rateLimit({ windowMs: 60 * 1000, max: 40 });
+const dlLimiter = rateLimit({ windowMs: 60 * 1000, max: 20 });
 app.use(baseLimiter);
 
 // Uploads (memory)
@@ -117,11 +119,9 @@ app.get('/healthz', (_req, res) => res.send('ok'));
 
 // ---------- Marketing nice URLs ----------
 app.get('/', (req, res) => {
-  // If paid cookie exists, go straight to app; otherwise landing
   const paid = getPaidClaim(req);
   if (paid) return res.redirect(302, '/app');
-  // serve marketing index
-  res.redirect(302, '/site/index.html');
+  return res.redirect(302, '/site/index.html');
 });
 app.get('/features', (_req, res) => res.redirect(302, '/site/features.html'));
 app.get('/faq', (_req, res) => res.redirect(302, '/site/faq.html'));
@@ -142,7 +142,6 @@ function getPaidClaim(req) {
     return null;
   }
 }
-
 function requirePaid(req, res, next) {
   const claim = getPaidClaim(req);
   if (claim) return next();
@@ -165,30 +164,27 @@ app.post('/api/create-checkout-session', async (req, res) => {
       mode: plan === 'team' ? 'subscription' : 'payment',
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${base}/billing/return?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${base}/pricing?canceled=1}`,
+      cancel_url: `${base}/pricing?canceled=1`,
       allow_promotion_codes: true
     });
     res.json({ url: session.url });
-  } catch (e) {
+  } catch {
     res.status(500).json({ error: 'Stripe error' });
   }
 });
 
-// User returns here; we verify the session with Stripe and set cookie
 app.get('/billing/return', async (req, res) => {
   try {
     const session_id = String(req.query.session_id || '');
     if (!session_id || !stripe) return res.redirect(302, '/pricing?error=missing_session');
     const session = await stripe.checkout.sessions.retrieve(session_id);
 
-    // Accept payment or subscription states
     const paidOk =
       (session.mode === 'payment' && session.payment_status === 'paid') ||
       (session.mode === 'subscription' && session.status === 'complete');
 
     if (!paidOk) return res.redirect(302, '/pricing?error=unpaid');
 
-    // Issue signed cookie for 30 days
     const claim = JSON.stringify({ sub: 'paid', sid: session_id, exp: Date.now() + 30 * 24 * 3600 * 1000 });
     const signed = sign(claim);
     res.cookie('tr_paid', signed, {
@@ -214,15 +210,12 @@ app.get('/api/templates', (req, res) => {
   fs.createReadStream(full).pipe(res);
 });
 
-// ---------- Validate ----------
+// ---------- VALIDATE (friendlier JSON) ----------
 app.post(
   '/api/validate',
   requirePaid,
   heavyLimiter,
-  upload.fields([
-    { name: 'clients', maxCount: 1 },
-    { name: 'transactions', maxCount: 1 }
-  ]),
+  upload.fields([{ name: 'clients', maxCount: 1 }, { name: 'transactions', maxCount: 1 }]),
   (req, res) => {
     try {
       const clientsFile = req.files?.clients?.[0];
@@ -230,18 +223,24 @@ app.post(
       if (!clientsFile || !txFile)
         return res.status(400).json({ ok: false, error: 'Both files required: clients, transactions' });
 
-      const clientsCsv = csvParse(clientsFile.buffer.toString('utf8'), { columns: true, skip_empty_lines: true });
-      const txCsv = csvParse(txFile.buffer.toString('utf8'), { columns: true, skip_empty_lines: true });
+      const clientsCsv = csvParse(clientsFile.buffer.toString('utf8'), {
+        columns: true, skip_empty_lines: true, relax_column_count: true
+      });
+      const txCsv = csvParse(txFile.buffer.toString('utf8'), {
+        columns: true, skip_empty_lines: true, relax_column_count: true
+      });
 
       const { clients, clientHeaderMap } = normalizeClients(clientsCsv);
       const { txs, txHeaderMap, rejects, lookback } = normalizeTransactions(txCsv);
 
+      const clientIssues = validateClients(clients);
+      const txIssues = validateTransactions(txs);
+
       res.json({
-        ok: true,
+        ok: clientIssues.length === 0 && txIssues.length === 0 && rejects.length === 0,
         counts: { clients: clients.length, txs: txs.length, rejects: rejects.length },
-        clientHeaderMap,
-        txHeaderMap,
-        rejects,
+        headerMaps: { clients: clientHeaderMap, transactions: txHeaderMap },
+        issues: { clients: clientIssues, transactions: txIssues, rejects },
         lookback
       });
     } catch {
@@ -255,10 +254,7 @@ app.post(
   '/upload',
   requirePaid,
   heavyLimiter,
-  upload.fields([
-    { name: 'clients', maxCount: 1 },
-    { name: 'transactions', maxCount: 1 }
-  ]),
+  upload.fields([{ name: 'clients', maxCount: 1 }, { name: 'transactions', maxCount: 1 }]),
   async (req, res) => {
     try {
       const clientsFile = req.files?.clients?.[0];
@@ -266,11 +262,25 @@ app.post(
       if (!clientsFile || !txFile)
         return res.status(400).json({ error: 'Both Clients.csv and Transactions.csv are required.' });
 
-      const clientsCsv = csvParse(clientsFile.buffer.toString('utf8'), { columns: true, skip_empty_lines: true });
-      const txCsv = csvParse(txFile.buffer.toString('utf8'), { columns: true, skip_empty_lines: true });
+      const clientsCsv = csvParse(clientsFile.buffer.toString('utf8'), {
+        columns: true, skip_empty_lines: true, relax_column_count: true
+      });
+      const txCsv = csvParse(txFile.buffer.toString('utf8'), {
+        columns: true, skip_empty_lines: true, relax_column_count: true
+      });
 
       const { clients, clientHeaderMap } = normalizeClients(clientsCsv);
       const { txs, txHeaderMap, rejects, lookback } = normalizeTransactions(txCsv);
+
+      // Guard: fail fast if validation has issues
+      const clientIssues = validateClients(clients);
+      const txIssues = validateTransactions(txs);
+      if (clientIssues.length || txIssues.length || rejects.length) {
+        return res.status(400).json({
+          error: 'Validation errors — fix and try again.',
+          issues: { clients: clientIssues, transactions: txIssues, rejects }
+        });
+      }
 
       const { scores, rulesMeta } = await scoreAll(clients, txs, lookback);
       const cases = buildCases(txs, lookback);
@@ -306,39 +316,78 @@ app.post(
 );
 
 function renderProgramHTML(rulesMeta, clientHeaderMap, txHeaderMap, rejects) {
-  return [
-    '<!doctype html><meta charset="utf-8"><title>TrancheReady Evidence</title>',
-    '<style>body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;line-height:1.55;padding:24px;color:#DCE6FF;background:#0A1730} code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0A1730;border:1px solid #213058;border-radius:8px;padding:10px;display:block;overflow:auto}</style>',
-    '<h1>TrancheReady Evidence</h1>',
-    `<p>Generated: ${new Date().toISOString()}</p>`,
-    '<h2>Ruleset</h2>',
-    `<pre>${escapeHtml(JSON.stringify(rulesMeta, null, 2))}</pre>`,
-    '<h2>Header Mapping</h2>',
-    `<pre>${escapeHtml(JSON.stringify({ clients: clientHeaderMap, transactions: txHeaderMap }, null, 2))}</pre>`,
-    '<h2>Row Rejects</h2>',
-    `<pre>${escapeHtml(JSON.stringify(rejects, null, 2))}</pre>`
-  ].join('');
+  return `<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrancheReady Evidence</title>
+<style>
+  :root{--ink:#E8F0FF;--muted:#A8B9E3;--line:#213058;--bg:#0A1630;--panel:#0B1733;--radius:14px}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:var(--ink);background:var(--bg);line-height:1.55}
+  .wrap{max-width:900px;margin:24px auto;padding:0 16px}
+  .card{background:linear-gradient(180deg,#0B1733,#0B1733);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:0 18px 44px rgba(0,12,45,.35);margin-bottom:16px}
+  h1,h2{margin:.2rem 0 .6rem}
+  .muted{color:var(--muted)}
+  pre{white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace;background:#0C1733;border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto}
+</style>
+<div class="wrap">
+  <div class="card">
+    <h1>TrancheReady Evidence</h1>
+    <p class="muted">Generated: ${new Date().toISOString()}</p>
+  </div>
+  <div class="card">
+    <h2>Ruleset</h2>
+    <pre>${escapeHtml(JSON.stringify(rulesMeta, null, 2))}</pre>
+  </div>
+  <div class="card">
+    <h2>Header Mapping</h2>
+    <pre>${escapeHtml(JSON.stringify({ clients: clientHeaderMap, transactions: txHeaderMap }, null, 2))}</pre>
+  </div>
+  <div class="card">
+    <h2>Row Rejects</h2>
+    <pre>${escapeHtml(JSON.stringify(rejects, null, 2))}</pre>
+  </div>
+</div>`;
 }
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ---------- Verify & Download (public) ----------
-app.get('/verify/:token', (req, res) => {
+// ---------- Verify & Download (public, rate limited) ----------
+app.get('/verify/:token', verifyLimiter, (req, res) => {
   const entry = verifyStore.get(req.params.token);
-  if (!entry || Date.now() > entry.exp) return res.status(404).send('Link expired or not found.');
+  if (!entry || Date.now() > entry.exp) {
+    res.status(404);
+    try { return res.render('error', { title: 'Link expired', message: 'This verify link has expired or is invalid.' }); }
+    catch { return res.send('Link expired or not found.'); }
+  }
   res.render('verify', { manifest: entry.manifest });
 });
-app.get('/download/:token', (req, res) => {
+
+app.get('/download/:token', dlLimiter, (req, res) => {
   const entry = verifyStore.get(req.params.token);
-  if (!entry || Date.now() > entry.exp) return res.status(404).send('Link expired or not found.');
+  if (!entry || Date.now() > entry.exp) {
+    res.status(404);
+    try { return res.render('error', { title: 'Link expired', message: 'This download link has expired or is invalid.' }); }
+    catch { return res.send('Link expired or not found.'); }
+  }
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', 'attachment; filename="trancheready-evidence.zip"');
   res.send(entry.zipBuffer);
 });
 
-// ---------- 404 ----------
-app.use((_req, res) => res.status(404).send('Not Found'));
+// ---------- 404 & error pages ----------
+app.use((req, res) => {
+  res.status(404);
+  try { return res.render('error', { title: 'Not found', message: 'The page you requested was not found.' }); }
+  catch { return res.send('Not Found'); }
+});
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500);
+  try { return res.render('error', { title: 'Server error', message: 'Please try again shortly.' }); }
+  catch { return res.send('Server error'); }
+});
 
 // ---------- Start ----------
 const PORT = parseInt(process.env.PORT || '10000', 10);
