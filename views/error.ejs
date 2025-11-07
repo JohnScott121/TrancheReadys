@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><%= title || 'Error' %> — TrancheReady</title>
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+<main class="container page">
+  <section class="card">
+    <h1><%= title || 'Something went wrong' %></h1>
+    <p class="muted"><%= message || 'Please go back and try again.' %></p>
+    <div style="margin-top:12px"><a class="btn primary" href="/">Back to site</a></div>
+  </section>
+</main>
+</body>
+</html>
