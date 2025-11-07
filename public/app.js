@@ -17,6 +17,7 @@ const riskBody = document.getElementById('riskBody');
 const toastEl = document.getElementById('toast');
 const submitBtn = document.getElementById('submitBtn');
 const validateBtn = document.getElementById('validateBtn');
+const sampleBtn = document.getElementById('sampleBtn');
 
 function toast(msg, ms = 2200) {
   toastEl.textContent = msg;
@@ -34,24 +35,14 @@ function esc(s) {
 if (drop) {
   const setHover = (v) => drop.setAttribute('data-hover', v ? 'true' : 'false');
   ['dragenter', 'dragover'].forEach((ev) =>
-    drop.addEventListener(ev, (e) => {
-      e.preventDefault();
-      setHover(true);
-    })
+    drop.addEventListener(ev, (e) => { e.preventDefault(); setHover(true); })
   );
   ['dragleave', 'drop'].forEach((ev) =>
-    drop.addEventListener(ev, (e) => {
-      e.preventDefault();
-      if (ev === 'drop') handleDrop(e);
-      setHover(false);
-    })
+    drop.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop') handleDrop(e); setHover(false); })
   );
   drop.addEventListener('click', () => clientsInput?.click());
   drop.addEventListener('keydown', (e) => {
-    if (e.key === ' ' || e.key === 'Enter') {
-      e.preventDefault();
-      clientsInput?.click();
-    }
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); clientsInput?.click(); }
   });
 
   function handleDrop(e) {
@@ -62,56 +53,54 @@ if (drop) {
     if (txs) setFile(txInput, txs);
     if (!clients || !txs) toast('Need both Clients.csv and Transactions.csv');
   }
-  function setFile(input, file) {
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    input.files = dt.files;
-  }
 }
 
 validateBtn?.addEventListener('click', () => run('/api/validate'));
-form?.addEventListener('submit', (e) => {
-  e.preventDefault();
-  run('/upload', true);
+form?.addEventListener('submit', (e) => { e.preventDefault(); run('/upload', true); });
+
+sampleBtn?.addEventListener('click', async ()=>{
+  try{
+    const c = await fetchAsFile('/api/templates?name=clients', 'Clients.sample.csv');
+    const t = await fetchAsFile('/api/templates?name=transactions', 'Transactions.sample.csv');
+    setFile(clientsInput, c);
+    setFile(txInput, t);
+    toast('Sample data loaded. Click Validate or Generate.');
+  } catch {
+    toast('Could not load samples');
+  }
 });
 
-async function run(url, isGenerate = false) {
-  try {
-    if (!clientsInput.files[0] || !txInput.files[0]) {
-      toast('Select both files');
-      return;
-    }
-    if (!/\.csv$/i.test(clientsInput.files[0].name) || !/\.csv$/i.test(txInput.files[0].name)) {
-      toast('Files must be .csv');
-      return;
-    }
+async function run(url, isGenerate=false){
+  try{
+    if (!clientsInput.files[0] || !txInput.files[0]) { toast('Select both files'); return; }
+    if (!/\.csv$/i.test(clientsInput.files[0].name) || !/\.csv$/i.test(txInput.files[0].name)) { toast('Files must be .csv'); return; }
 
     if (isGenerate) submitBtn.classList.add('loading');
     out.textContent = '';
-    summary.hidden = true;
-    riskWrap.hidden = true;
-    progress.hidden = false;
-    setBar(10);
+    summary.hidden = true; riskWrap.hidden = true;
+    progress.hidden = false; setBar(10);
 
     const fd = new FormData();
     fd.append('clients', clientsInput.files[0]);
     fd.append('transactions', txInput.files[0]);
 
     setBar(40);
-    const res = await fetch(url, { method: 'POST', body: fd, headers: { 'X-Requested-With': 'fetch' } });
-    const text = await res.text();
+    const res = await fetch(url, { method:'POST', body: fd, headers: { 'X-Requested-With': 'fetch' } });
+    const text = await res.text(); // raw for diagnostics
     let data = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {}
+    try { data = text ? JSON.parse(text) : {}; } catch {}
 
     setBar(80);
     if (!res.ok) {
-      out.textContent = JSON.stringify({ ok: false, status: res.status, body: data || text }, null, 2);
+      if (data && data.issues) {
+        out.textContent = renderIssuesText(data.issues);
+      } else {
+        out.textContent = JSON.stringify({ ok:false, status: res.status, body: data || text }, null, 2);
+      }
       throw new Error((data && data.error) || `Request failed (${res.status})`);
     }
 
-    if (isGenerate) {
+    if (isGenerate){
       verifyUrlEl.textContent = data.verify_url;
       openVerify.href = data.verify_url;
       downloadZip.href = data.download_url;
@@ -122,52 +111,76 @@ async function run(url, isGenerate = false) {
       out.textContent = '';
       toast('Evidence ready');
     } else {
-      out.textContent = JSON.stringify(data, null, 2);
-      toast('Validated');
+      // pretty validate output
+      if (data.issues) {
+        out.textContent = renderIssuesText(data.issues) || 'No issues found';
+      } else {
+        out.textContent = JSON.stringify(data, null, 2);
+      }
+      toast(data.ok ? 'Validated' : 'Validation warnings');
     }
     setBar(100);
-  } catch (err) {
+  }catch(err){
     toast('Error: ' + (err.message || 'failed'));
-  } finally {
+  }finally{
     submitBtn.classList.remove('loading');
-    setTimeout(() => {
-      progress.hidden = true;
-      setBar(0);
-    }, 400);
+    setTimeout(()=> { progress.hidden = true; setBar(0); }, 400);
   }
 }
 
-function setBar(p) {
-  if (bar) bar.style.width = `${Math.max(0, Math.min(100, p))}%`;
-}
+function setBar(p){ if(bar) bar.style.width = `${Math.max(0, Math.min(100, p))}%`; }
 
-function renderRisk(items) {
+function renderRisk(items){
   riskBody.innerHTML = '';
   const frag = document.createDocumentFragment();
   for (const item of items) {
     const band = String(item.band || 'Low').toLowerCase();
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><span class="mono">${esc(item.client_id || '—')}</span></td>
-      <td><span class="badge ${band === 'high' ? 'high' : band === 'medium' ? 'med' : 'low'}">${esc(item.band || 'Low')}</span></td>
+      <td><span class="mono">${esc(item.client_id||'—')}</span></td>
+      <td><span class="badge ${band==='high'?'high':band==='medium'?'med':'low'}">${esc(item.band||'Low')}</span></td>
       <td>${String(item.score ?? 0)}</td>
       <td>
-        ${Array.isArray(item.reasons) && item.reasons.length ? `
-          <details><summary>${item.reasons.length} reason${item.reasons.length === 1 ? '' : 's'}</summary>
+        ${Array.isArray(item.reasons)&&item.reasons.length?`
+          <details><summary>${item.reasons.length} reason${item.reasons.length===1?'':'s'}</summary>
           <div class="reason-list">
-            ${item.reasons.map(r => `<div class="reason"><span class="tag">${esc(r.family)} +${esc(r.points)}</span><span>${esc(r.text)}</span></div>`).join('')}
-          </div></details>` : '<span class="muted">—</span>'}
+            ${item.reasons.map(r=>`<div class="reason"><span class="tag">${esc(r.family)} +${esc(r.points)}</span><span>${esc(r.text)}</span></div>`).join('')}
+          </div></details>`:'<span class="muted">—</span>'}
       </td>`;
     frag.appendChild(tr);
   }
   riskBody.appendChild(frag);
 }
 
-copyVerify?.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(verifyUrlEl.textContent);
-    toast('Verify link copied');
-  } catch {
-    toast('Copy failed');
-  }
+function renderIssuesText(issues){
+  const lines = [];
+  const add = (arr, label) => {
+    if (!arr || !arr.length) return;
+    lines.push(`\n=== ${label} (${arr.length}) ===`);
+    for (const it of arr.slice(0, 100)) {
+      const id = it.client_id || it.tx_id || `row ${it.row}`;
+      lines.push(`- ${id}: ${it.errors?.join('; ') || it.reason || 'issue'}`);
+    }
+    if (arr.length > 100) lines.push(`…and ${arr.length - 100} more`);
+  };
+  add(issues.clients, 'Client issues');
+  add(issues.transactions, 'Transaction issues');
+  add(issues.rejects, 'Rejected rows');
+  return lines.join('\n');
+}
+
+async function fetchAsFile(url, filename){
+  const r = await fetch(url);
+  const blob = await r.blob();
+  return new File([blob], filename, { type: 'text/csv' });
+}
+function setFile(input, file){
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+}
+
+copyVerify?.addEventListener('click', async ()=>{
+  try { await navigator.clipboard.writeText(verifyUrlEl.textContent); toast('Verify link copied'); }
+  catch { toast('Copy failed'); }
 });
