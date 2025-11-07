@@ -1,0 +1,3 @@
+client_id,full_name,dob,residency_country,delivery_channel,services,pep_flag,sanctions_flag,kyc_last_reviewed_at
+C-001,Jane Smith,1982-05-21,AU,branch,property,false,false,2025-02-11
+C-002,Wei Chen,1979-09-13,CN,online,remittance,true,false,2024-08-01
