@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verify Evidence — TrancheReady</title>
+  <link rel="icon" href="/public/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+<header class="glass-nav">
+  <div class="container nav-grid">
+    <a class="brand" href="/" aria-label="TrancheReady">
+      <img src="/public/logo.svg" alt="" class="brand-mark" width="28" height="32">
+      <span class="brand-name">TrancheReady</span>
+    </a>
+  </div>
+</header>
+
+<main class="container page">
+  <section class="card">
+    <h1>Evidence manifest</h1>
+    <p class="muted small">SHA-256 hashes for integrity verification.</p>
+    <div class="grid two">
+      <article class="panel">
+        <h3>Files</h3>
+        <ul class="file-list">
+          <% manifest.files.forEach(f => { %>
+            <li>
+              <span class="mono"><%= f.name %></span>
+              <small class="muted"><%= f.bytes %> bytes</small>
+              <code class="hash mono"><%= f.sha256 %></code>
+            </li>
+          <% }) %>
+        </ul>
+      </article>
+      <article class="panel">
+        <h3>Metadata</h3>
+        <div class="kv">
+          <div><span class="k">Created (UTC)</span><span class="v mono"><%= manifest.created_utc %></span></div>
+          <div><span class="k">Ruleset</span><span class="v mono"><%= manifest.ruleset_id %></span></div>
+          <div><span class="k">Hash algo</span><span class="v mono"><%= manifest.hash_algo %></span></div>
+        </div>
+      </article>
+    </div>
+    <details class="manifest-raw">
+      <summary>View raw manifest.json</summary>
+      <pre class="pre"><%= JSON.stringify(manifest, null, 2) %></pre>
+    </details>
+  </section>
+</main>
+</body>
+</html>
