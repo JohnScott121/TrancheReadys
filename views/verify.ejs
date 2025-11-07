@@ -26,9 +26,16 @@
         <ul class="file-list">
           <% manifest.files.forEach(f => { %>
             <li>
-              <span class="mono"><%= f.name %></span>
-              <small class="muted"><%= f.bytes %> bytes</small>
-              <code class="hash mono"><%= f.sha256 %></code>
+              <div style="display:flex; align-items:center; gap:10px; justify-content:space-between; flex-wrap:wrap">
+                <div>
+                  <div class="mono"><%= f.name %></div>
+                  <small class="muted"><%= f.bytes %> bytes</small>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center">
+                  <code class="hash mono" style="font-size:.85rem"><%= f.sha256 %></code>
+                  <button class="btn small ghost" onclick="navigator.clipboard.writeText('<%= f.sha256 %>')">Copy</button>
+                </div>
+              </div>
             </li>
           <% }) %>
         </ul>
