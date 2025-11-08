@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: trancheready
+    env: node
+    plan: starter
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    nodeVersion: "18"
+    autoDeploy: true
+    envVars:
+      - key: PRIMARY_DOMAIN
+        value: trancheready.com
+      - key: FORCE_HTTPS
+        value: "1"
+      - key: COOKIE_SECRET
+        generateValue: true
+      - key: VERIFY_TTL_MIN
+        value: "60"
+      - key: BUILD_ID
+        value: "prod-2025-11"
+      # Add Stripe when ready (can leave out for now)
+      # - key: STRIPE_SECRET_KEY
+      #   value: sk_test_xxx
+      # - key: STRIPE_PRICE_ID_STARTER
+      #   value: price_xxx
+      # - key: STRIPE_PRICE_ID_TEAM
+      #   value: price_yyy
